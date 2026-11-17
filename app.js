@@ -130,7 +130,8 @@ async function handleFile(blob, name) {
     log(`${name}: ${fmtDur(dur)} di audio, ${(blob.size / 1048576).toFixed(1)} MB`);
     if (!dur) throw new Error("nessun audio nel file");
     if (!isReady) setStatus("In attesa del modello…", 0.08);
-    await ready;
+    try { await ready; }
+    catch (e) { setStatus("Il modello non si è caricato: apri Diagnostica."); endBusy(); return; }
     setStatus(`Trascrizione di ${fmtDur(dur)}…`, 0.1);
     const lang = ui.lang.value;
     const keywords = ui.kw.value.split(",").map((s) => s.trim()).filter(Boolean).join("\n");
@@ -240,11 +241,19 @@ async function startLive() {
   }
   await startBusy(true);
   const Ctx = window.AudioContext || window.webkitAudioContext;
-  let ctx;
-  try { ctx = new Ctx({ sampleRate: SR }); } catch { ctx = new Ctx(); }
+  let ctx, src;
+  try {
+    ctx = new Ctx({ sampleRate: SR });
+    src = ctx.createMediaStreamSource(stream);
+  } catch (e) {
+    // Firefox non collega un microfono a 48 kHz a un contesto a 16 kHz: uso la frequenza nativa e ricampiono
+    log("Microfono alla frequenza nativa (" + e.message + ")");
+    try { ctx?.close(); } catch {}
+    ctx = new Ctx();
+    src = ctx.createMediaStreamSource(stream);
+  }
   if (ctx.state === "suspended") await ctx.resume();
   await ctx.audioWorklet.addModule("mic-worklet.js");
-  const src = ctx.createMediaStreamSource(stream);
   const node = new AudioWorkletNode(ctx, "mic-capture");
   const mute = ctx.createGain(); mute.gain.value = 0; // il nodo deve arrivare a destination per girare
   src.connect(node).connect(mute).connect(ctx.destination);

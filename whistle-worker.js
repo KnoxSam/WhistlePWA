@@ -64,6 +64,35 @@ async function readWithProgress(res, label) {
   return out;
 }
 
+/**
+ * Chiama una funzione del motore. Alcuni parametri (es. le lunghezze size_t/int64) nel build WASM
+ * sono a 64 bit e JavaScript li vuole come BigInt: se il motore lo segnala ("can't convert N to
+ * BigInt"), converto quel parametro, riprovo e ricordo la scelta per le chiamate successive.
+ */
+const BIG_ARGS = {};
+function call(name, ...args) {
+  const fn = M["_" + name];
+  if (typeof fn !== "function") throw new Error(`funzione ${name} assente nel motore`);
+  const big = BIG_ARGS[name] || (BIG_ARGS[name] = new Set());
+  for (let attempt = 0; attempt <= args.length; attempt++) {
+    const a = args.map((v, i) => (big.has(i) ? BigInt(Math.trunc(v)) : v));
+    try {
+      const r = fn(...a);
+      return typeof r === "bigint" ? Number(r) : r;
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      if (!/convert .*to (a )?BigInt/i.test(msg)) throw e;
+      const num = (msg.match(/-?\d+/) || [])[0];
+      let idx = num == null ? -1 : args.findIndex((v, i) => !big.has(i) && typeof v === "number" && String(v) === num);
+      if (idx < 0) idx = args.findIndex((v, i) => !big.has(i) && typeof v === "number");
+      if (idx < 0) throw e;
+      big.add(idx);
+      log(`${name}: parametro ${idx + 1} passato come intero a 64 bit`);
+    }
+  }
+  throw new Error(`${name}: tipi dei parametri non riconosciuti`);
+}
+
 function heap() { return M.HEAPU8; } // la vista può cambiare quando la memoria cresce
 
 function allocBytes(bytes) {
@@ -109,7 +138,7 @@ async function init() {
     try {
       M = await loadEngine(engine);
       const ptr = allocBytes(model); // non viene liberato: il motore può riferirsi a questi byte
-      const rc = M._cactus_load(ptr, model.length);
+      const rc = call("cactus_load", ptr, model.length);
       if (rc < 0) throw new Error("cactus_load: " + lastError());
       log(`Motore Cactus ${engine.version} pronto`);
       post("ready", { ms: Math.round(performance.now() - t0), modelMB: +(model.length / 1048576).toFixed(1) });
@@ -132,7 +161,7 @@ function transcribeChunk(samples, lang, keywords) {
   const out = M._malloc(cap);
   try {
     heap()[out] = 0;
-    const rc = M._cactus_transcribe(pcm, samples.length, langPtr, kwPtr, 1, out, cap);
+    const rc = call("cactus_transcribe", pcm, samples.length, langPtr, kwPtr, 1, out, cap);
     if (rc < 0) throw new Error("cactus_transcribe: " + lastError());
     const txt = M.UTF8ToString(out, cap);
     return txt ? JSON.parse(txt) : { text: "" };
@@ -277,7 +306,7 @@ function liveChunk({ samples }) {
     const pcm = allocBytes(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength));
     try {
       heap()[live.out] = 0;
-      const rc = M._cactus_stream_transcribe_process(pcm, samples.length, live.langPtr, live.kwPtr,
+      const rc = call("cactus_stream_transcribe_process", pcm, samples.length, live.langPtr, live.kwPtr,
         live.out, LIVE_CAP);
       if (rc < 0) throw new Error(lastError());
       applyStream(readOut());
@@ -301,7 +330,7 @@ function liveStop() {
   if (live.mode === "native") {
     try {
       heap()[live.out] = 0;
-      const rc = M._cactus_stream_transcribe_stop(live.out, LIVE_CAP);
+      const rc = call("cactus_stream_transcribe_stop", live.out, LIVE_CAP);
       if (rc < 0) throw new Error(lastError());
       const res = readOut();
       applyStream(res);

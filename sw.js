@@ -1,5 +1,5 @@
 /* Service worker: rende l'app disponibile offline e riceve file condivisi (Android). */
-const VERSION = "whistle-v3";
+const VERSION = "whistle-v4";
 const SHELL = [
   "./", "index.html", "app.js", "segments.js", "whistle-worker.js", "mic-worklet.js", "manifest.webmanifest",
   "icon.svg", "icon-192.png", "icon-512.png", "icon-180.png",

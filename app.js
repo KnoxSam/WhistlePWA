@@ -10,7 +10,7 @@ const ui = {
   card: $("resultCard"), meta: $("meta"), text: $("text"), segs: $("segs"), log: $("log"),
 };
 
-let worker, ready, readyResolve, readyReject, busy = false, current = null, recorder = null;
+let worker, ready, readyResolve, readyReject, isReady = false, busy = false, current = null;
 ready = new Promise((res, rej) => { readyResolve = res; readyReject = rej; });
 ready.catch(() => {});
 
@@ -45,11 +45,12 @@ function startWorker() {
       case "ready":
         pill("Modello pronto", "ok");
         log(`Modello caricato (${d.modelMB} MB) in ${d.ms} ms`);
-        readyResolve(); break;
+        isReady = true; readyResolve(); break;
       case "progress":
         setStatus(`Trascrizione… blocco ${d.done}/${d.total}`, 0.1 + 0.9 * d.done / d.total);
         if (d.text) { ui.card.classList.remove("hidden"); ui.text.textContent = d.text + " …"; }
         break;
+      case "live": onLive(d); break;
       case "result": onResult(d.result); break;
       case "error":
         log("ERRORE: " + d.msg);
@@ -101,9 +102,9 @@ function resampleLinear(x, from, to) {
 
 /* ---------------------------------------------------------------- flusso */
 let wakeLock = null;
-async function startBusy() {
+async function startBusy(liveMode = false) {
   busy = true;
-  ui.pick.classList.add("disabled"); ui.rec.disabled = true;
+  ui.pick.classList.add("disabled"); ui.rec.disabled = !liveMode;
   try { wakeLock = await navigator.wakeLock?.request("screen"); } catch {}
 }
 function endBusy() {
@@ -128,7 +129,7 @@ async function handleFile(blob, name) {
     const dur = samples.length / SR;
     log(`${name}: ${fmtDur(dur)} di audio, ${(blob.size / 1048576).toFixed(1)} MB`);
     if (!dur) throw new Error("nessun audio nel file");
-    setStatus(ready ? "In attesa del modello…" : "", 0.08);
+    if (!isReady) setStatus("In attesa del modello…", 0.08);
     await ready;
     setStatus(`Trascrizione di ${fmtDur(dur)}…`, 0.1);
     const lang = ui.lang.value;
@@ -145,8 +146,14 @@ async function handleFile(blob, name) {
 function onResult(r) {
   current.result = r;
   endBusy();
-  const speed = r.elapsedMs ? (r.duration / (r.elapsedMs / 1000)).toFixed(1) : "?";
-  setStatus(`Fatto in ${fmtDur(r.elapsedMs / 1000)} (${speed}× tempo reale)`, 1);
+  if (r.live) {
+    liveUi.card.classList.add("hidden");
+    store.set("liveDraft", "");
+  }
+  if (!r.live) {
+    const speed = r.elapsedMs ? (r.duration / (r.elapsedMs / 1000)).toFixed(1) : "?";
+    setStatus(`Fatto in ${fmtDur(r.elapsedMs / 1000)} (${speed}× tempo reale)`, 1);
+  }
   ui.meta.textContent = `Lingua: ${r.language} · durata ${fmtDur(r.duration)} · ${r.segments.length} segmenti`;
   ui.text.textContent = WS.toTxt(r).trim() || "(nessun parlato riconosciuto)";
   ui.segs.innerHTML = "";
@@ -210,31 +217,124 @@ ui.file.addEventListener("change", () => {
   ui.file.value = "";
 });
 
-ui.rec.addEventListener("click", async () => {
-  if (recorder) { recorder.stop(); return; }
+/* ---------------------------------------------------------------- dal vivo */
+const liveUi = { card: $("liveCard"), text: $("liveText"), pend: $("livePending"), time: $("liveTime"),
+                 meter: $("liveMeter"), info: $("liveInfo") };
+let mic = null; // { stream, ctx, node, raw[], rawLen, rate, tick, t0 }
+
+async function startLive() {
+  if (busy || mic) return;
+  if (!navigator.mediaDevices?.getUserMedia) {
+    log("Microfono non disponibile: serve HTTPS."); setLiveInfo("Microfono non disponibile (serve HTTPS)."); return;
+  }
+  let stream;
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
-    const chunks = [];
-    recorder = new MediaRecorder(stream);
-    const t0 = Date.now();
-    const tick = setInterval(() => (ui.rec.innerHTML = `⏹ Stop <span class="timer">${fmtDur((Date.now() - t0) / 1000)}</span>`), 500);
-    recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-    recorder.onstop = () => {
-      clearInterval(tick);
-      stream.getTracks().forEach((t) => t.stop());
-      ui.rec.className = ""; ui.rec.textContent = "🎙️ Registra";
-      const blob = new Blob(chunks, { type: recorder.mimeType });
-      recorder = null;
-      const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
-      handleFile(blob, `registrazione-${stamp}`);
-    };
-    recorder.start(1000);
-    ui.rec.className = "rec"; ui.rec.innerHTML = "⏹ Stop <span class=\"timer\">0:00</span>";
   } catch (e) {
     log("Microfono: " + e.message);
-    alert("Microfono non disponibile. Serve HTTPS e il permesso del browser.");
+    setLiveInfo("Permesso microfono negato: abilitalo nelle impostazioni del browser.");
+    liveUi.card.classList.remove("hidden");
+    return;
+  }
+  await startBusy(true);
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  let ctx;
+  try { ctx = new Ctx({ sampleRate: SR }); } catch { ctx = new Ctx(); }
+  if (ctx.state === "suspended") await ctx.resume();
+  await ctx.audioWorklet.addModule("mic-worklet.js");
+  const src = ctx.createMediaStreamSource(stream);
+  const node = new AudioWorkletNode(ctx, "mic-capture");
+  const mute = ctx.createGain(); mute.gain.value = 0; // il nodo deve arrivare a destination per girare
+  src.connect(node).connect(mute).connect(ctx.destination);
+
+  mic = { stream, ctx, node, raw: [], rawLen: 0, rate: ctx.sampleRate, t0: Date.now(), started: false, queue: [] };
+  log(`Microfono a ${ctx.sampleRate} Hz`);
+  node.port.onmessage = (e) => onMicBlock(e.data);
+  stream.getAudioTracks()[0].onended = () => stopLive();
+
+  liveUi.text.textContent = ""; liveUi.pend.textContent = "";
+  liveUi.card.classList.remove("hidden");
+  ui.card.classList.add("hidden"); ui.work.classList.add("hidden");
+  current = { name: "dal-vivo-" + new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-") };
+  ui.rec.className = "rec";
+  mic.tick = setInterval(() => {
+    const s = (Date.now() - mic.t0) / 1000;
+    ui.rec.innerHTML = `⏹ Stop <span class="timer">${fmtDur(s)}</span>`;
+    liveUi.time.textContent = fmtDur(s);
+  }, 500);
+  if (!isReady) setLiveInfo("Preparo il modello… (l'audio non va perso)");
+  await ready.catch(() => {});
+  if (!mic) return;
+  if (!isReady) { stopLive(true); setLiveInfo("Modello non disponibile: apri Diagnostica."); return; }
+  worker.postMessage({ type: "live_start", lang: ui.lang.value,
+    keywords: ui.kw.value.split(",").map((s) => s.trim()).filter(Boolean).join("\n") });
+  mic.started = true;
+  for (const pcm of mic.queue) worker.postMessage({ type: "live_chunk", samples: pcm }, [pcm.buffer]);
+  mic.queue = [];
+  setLiveInfo("In ascolto…");
+}
+
+function onMicBlock(block) {
+  if (!mic) return;
+  let rms = 0;
+  for (let i = 0; i < block.length; i += 8) rms += block[i] * block[i];
+  rms = Math.sqrt(rms / (block.length / 8));
+  liveUi.meter.style.width = Math.min(100, Math.round(rms * 400)) + "%";
+  mic.raw.push(block); mic.rawLen += block.length;
+  if (mic.rawLen >= mic.rate) sendMicSecond(false); // ~1 s alla volta, come vuole Whistle
+}
+
+function sendMicSecond(final) {
+  if (!mic.rawLen) return;
+  const raw = new Float32Array(mic.rawLen);
+  let o = 0;
+  for (const b of mic.raw) { raw.set(b, o); o += b.length; }
+  const take = final ? raw.length : mic.rate;
+  let pcm = raw.subarray(0, take);
+  pcm = mic.rate === SR ? pcm.slice() : resampleLinear(pcm, mic.rate, SR);
+  const rest = raw.slice(take);
+  mic.raw = rest.length ? [rest] : []; mic.rawLen = rest.length;
+  if (!mic.started) { mic.queue.push(pcm); return; } // modello non ancora pronto: tengo l'audio
+  worker.postMessage({ type: "live_chunk", samples: pcm }, [pcm.buffer]);
+}
+
+function onLive(d) {
+  liveUi.text.textContent = d.committed;
+  liveUi.pend.textContent = d.pending ? " " + d.pending : "";
+  liveUi.text.parentElement.scrollTop = liveUi.text.parentElement.scrollHeight;
+  const lag = mic ? (Date.now() - mic.t0) / 1000 - d.seconds : 0;
+  setLiveInfo(`${d.mode === "native" ? "Streaming" : "A blocchi"} · elaborazione ${d.passMs || "?"} ms/s` +
+    (lag > 5 ? ` · in ritardo di ${Math.round(lag)} s` : ""));
+  store.set("liveDraft", d.committed);
+}
+
+function setLiveInfo(t) { liveUi.info.textContent = t; }
+
+function stopLive(abort = false) {
+  if (!mic) return;
+  const m = mic;
+  if (!m.started) abort = true; // fermato prima che il modello fosse pronto
+  if (!abort) sendMicSecond(true);
+  mic = null;
+  clearInterval(m.tick);
+  m.node.port.onmessage = null;
+  m.stream.getTracks().forEach((t) => t.stop());
+  m.ctx.close().catch(() => {});
+  liveUi.meter.style.width = "0";
+  ui.rec.className = ""; ui.rec.textContent = "🎙️ Dal vivo";
+  if (abort) { endBusy(); setLiveInfo("Registrazione fermata prima che il modello fosse pronto."); return; }
+  setLiveInfo("Chiudo la trascrizione…");
+  worker.postMessage({ type: "live_stop" });
+}
+
+ui.rec.addEventListener("click", () => (mic ? stopLive() : startLive()));
+
+// se lo schermo si spegne il browser sospende il microfono: provo a riprendere il wake lock
+document.addEventListener("visibilitychange", async () => {
+  if (document.visibilityState === "visible" && busy && !wakeLock) {
+    try { wakeLock = await navigator.wakeLock?.request("screen"); } catch {}
   }
 });
 

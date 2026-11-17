@@ -5,7 +5,10 @@ Web app installabile che trascrive l'audio direttamente sul telefono con il mode
 
 - Al primo avvio scarica motore e modello da Hugging Face (~18 MB) e li salva sul telefono.
 - Da quel momento funziona anche senza internet: l'audio non lascia il telefono.
-- File audio/video o registrazione dal microfono; lingua e parole chiave; export TXT/SRT/VTT/JSON.
+- **Dal vivo**: trascrive in continuo dal microfono mentre parli (streaming Whistle, ~1 s alla volta).
+  Il testo grigio in corsivo è provvisorio e si conferma pochi secondi dopo. Tieni lo schermo acceso:
+  in standby il browser ferma il microfono.
+- File audio/video; lingua e parole chiave; export TXT/SRT/VTT/JSON.
 - Android: "Condividi → Whistle" da WhatsApp o dal registratore.
 
 ## Pubblicazione con GitHub Pages
@@ -16,4 +19,4 @@ Web app installabile che trascrive l'audio direttamente sul telefono con il mode
 
 ## Aggiornare l'app
 Carica i file nuovi nello stesso repository e cambia `VERSION` in `sw.js` (es. `whistle-v3`).
-Il telefono prende la nuova versione alla seconda apertura.
+Il telefono prende la nuova versione alla seconda apertura (chiudi e riapri l'app).

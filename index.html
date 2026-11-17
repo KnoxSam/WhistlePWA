@@ -72,6 +72,15 @@
   #log { font: 12px/1.5 var(--mono); color: var(--muted); white-space: pre-wrap; max-height: 220px; overflow: auto; margin: 10px 0 0; }
   .hidden { display: none !important; }
   .timer { font-variant-numeric: tabular-nums; }
+  .live-head { display: flex; align-items: center; gap: 8px; }
+  .live-head .timer { margin-left: auto; color: var(--muted); font-size: 14px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--danger); animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
+  .meter { height: 4px; margin: 10px 0 12px; }
+  .meter > div { transition: width .08s; }
+  .live-box { min-height: 140px; max-height: 45vh; overflow: auto; font-size: 18px; line-height: 1.55;
+    white-space: pre-wrap; padding: 4px 0 10px; }
+  #livePending { color: var(--muted); font-style: italic; }
 </style>
 </head>
 <body>
@@ -84,10 +93,10 @@
   <section class="card">
     <div class="actions">
       <label class="btn primary" id="pickBtn" for="file">📂 Scegli audio</label>
-      <button id="recBtn" type="button">🎙️ Registra</button>
+      <button id="recBtn" type="button">🎙️ Dal vivo</button>
     </div>
     <input id="file" type="file" accept="audio/*,video/*,.opus,.ogg,.m4a,.aac,.amr,.wav,.mp3,.mp4,.webm">
-    <div class="drop">Funziona offline: l'audio non lascia il telefono.</div>
+    <div class="drop">"Dal vivo" trascrive mentre parli. Funziona offline: l'audio non lascia il telefono.</div>
   </section>
 
   <section class="card">
@@ -108,6 +117,17 @@
       <input id="kw" type="text" placeholder="es. Sam, Qwen, llama.cpp" autocomplete="off">
       <div class="hint">Nomi propri e termini tecnici che il modello deve riconoscere meglio.</div>
     </details>
+  </section>
+
+  <section class="card hidden" id="liveCard">
+    <div class="live-head">
+      <span class="dot"></span><strong>Dal vivo</strong>
+      <span class="timer" id="liveTime">0:00</span>
+    </div>
+    <div class="bar meter"><div id="liveMeter"></div></div>
+    <div class="live-box"><span id="liveText"></span><span id="livePending"></span></div>
+    <div class="status" id="liveInfo"></div>
+    <div class="hint">Tieni lo schermo acceso e l'app in primo piano: se il telefono va in standby il browser ferma il microfono.</div>
   </section>
 
   <section class="card hidden" id="work">

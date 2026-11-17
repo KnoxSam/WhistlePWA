@@ -174,11 +174,164 @@ function transcribe({ samples, lang, keywords, chunkSec }) {
   });
 }
 
+/* ------------------------------------------------------------------ dal vivo
+ * Modalità "native": cactus_stream_transcribe_process(pcm, n, lang, keywords, out, cap) per ogni
+ * ~1 s di audio, cactus_stream_transcribe_stop(out, cap) alla fine (come cactus.stream in Python).
+ * Se lo streaming non è disponibile: modalità "chunk", blocchi di 10-15 s tagliati nelle pause.
+ */
+const LIVE_CAP = 4 << 20;
+let live = null;
+
+function liveStart({ lang, keywords }) {
+  if (live) liveFree();
+  live = {
+    lang, keywords,
+    langPtr: allocString(lang), kwPtr: allocString(keywords), out: M._malloc(LIVE_CAP),
+    mode: typeof M._cactus_stream_transcribe_process === "function" ? "native" : "chunk",
+    committed: "", pending: "", words: [], orphans: [], language: lang || null,
+    received: 0,            // campioni ricevuti
+    chunkBuf: [], chunkLen: 0, chunkOffset: 0, // per la modalità chunk
+    t0: performance.now(), lastPassMs: 0,
+  };
+  log(`Dal vivo: modalità ${live.mode === "native" ? "streaming Whistle" : "a blocchi"}`);
+}
+
+function liveFree() {
+  if (!live) return;
+  M._free(live.out);
+  if (live.langPtr) M._free(live.langPtr);
+  if (live.kwPtr) M._free(live.kwPtr);
+  live = null;
+}
+
+function readOut() {
+  const txt = M.UTF8ToString(live.out, LIVE_CAP);
+  return txt ? JSON.parse(txt) : {};
+}
+
+function addOrphan(text) {
+  // testo senza tempi per parola: lo colloco dopo l'ultima parola nota
+  const last = live.orphans.length ? live.orphans[live.orphans.length - 1].end : 0;
+  const lastWord = live.words.length ? live.words[live.words.length - 1].end : 0;
+  const start = Math.max(last, lastWord), end = Math.max(start, live.received / SR);
+  live.orphans.push({ start: +start.toFixed(3), end: +end.toFixed(3), text });
+}
+
+function applyStream(res) {
+  if (res.language) live.language = res.language;
+  const t = (res.text || "").trim();
+  const before = live.committed;
+  if (t) {
+    // il testo può arrivare cumulativo o solo la parte nuova: gestisco entrambi i casi
+    if (t.startsWith(live.committed)) live.committed = t;
+    else live.committed = (live.committed + " " + t).trim();
+  }
+  const added = live.committed.startsWith(before) ? live.committed.slice(before.length).trim() : t;
+  const ws = WS.normWords(res.words || [], 0);
+  if (added && !ws.length) addOrphan(added);
+  if (ws.length) {
+    const cumulative = live.words.length && ws.length >= live.words.length &&
+      Math.abs(ws[0].start - live.words[0].start) < 0.01;
+    if (cumulative) live.words = ws; else live.words.push(...ws);
+  }
+  live.pending = (res.pending || "").trim();
+  if (typeof res.pass_ms === "number") live.lastPassMs = res.pass_ms;
+}
+
+function chunkFlush(final) {
+  if (!live.chunkLen) return;
+  const buf = new Float32Array(live.chunkLen);
+  let o = 0;
+  for (const c of live.chunkBuf) { buf.set(c, o); o += c.length; }
+  let cut = buf.length;
+  if (!final) {
+    // taglio nel punto più silenzioso degli ultimi 3 s
+    const frame = SR / 10;
+    let best = Infinity;
+    for (let f = Math.max(0, buf.length - 3 * SR); f + frame <= buf.length; f += frame) {
+      let e = 0;
+      for (let k = f; k < f + frame; k += 4) e += buf[k] * buf[k];
+      if (e < best) { best = e; cut = f + frame / 2; }
+    }
+  }
+  const head = buf.subarray(0, cut), rest = buf.slice(cut);
+  const t0 = performance.now();
+  const res = transcribeChunk(head, live.lang, live.keywords);
+  live.lastPassMs = Math.round(performance.now() - t0);
+  if (res.language) live.language = live.language || res.language;
+  const t = (res.text || "").trim();
+  if (t) live.committed = (live.committed + " " + t).trim();
+  const ws = WS.normWords(res.words || [], live.chunkOffset / SR);
+  live.words.push(...ws);
+  if (t && !ws.length) live.orphans.push({ start: +(live.chunkOffset / SR).toFixed(3),
+    end: +((live.chunkOffset + cut) / SR).toFixed(3), text: t });
+  live.chunkOffset += cut;
+  live.chunkBuf = rest.length ? [rest] : [];
+  live.chunkLen = rest.length;
+}
+
+function liveChunk({ samples }) {
+  if (!live) return;
+  live.received += samples.length;
+  if (live.mode === "native") {
+    const pcm = allocBytes(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength));
+    try {
+      heap()[live.out] = 0;
+      const rc = M._cactus_stream_transcribe_process(pcm, samples.length, live.langPtr, live.kwPtr,
+        live.out, LIVE_CAP);
+      if (rc < 0) throw new Error(lastError());
+      applyStream(readOut());
+    } catch (e) {
+      log(`Streaming non disponibile (${e.message}): passo alla modalità a blocchi`);
+      live.mode = "chunk";
+      live.chunkOffset = live.received - samples.length;
+    } finally { M._free(pcm); }
+  }
+  if (live.mode === "chunk") {
+    live.chunkBuf.push(samples.slice());
+    live.chunkLen += samples.length;
+    if (live.chunkLen >= 12 * SR) chunkFlush(false);
+  }
+  post("live", { committed: live.committed, pending: live.pending, seconds: live.received / SR,
+                 passMs: live.lastPassMs, mode: live.mode });
+}
+
+function liveStop() {
+  if (!live) return;
+  if (live.mode === "native") {
+    try {
+      heap()[live.out] = 0;
+      const rc = M._cactus_stream_transcribe_stop(live.out, LIVE_CAP);
+      if (rc < 0) throw new Error(lastError());
+      const res = readOut();
+      applyStream(res);
+      if (live.pending) {
+        live.committed = (live.committed + " " + live.pending).trim();
+        addOrphan(live.pending);
+      }
+    } catch (e) { log("Chiusura streaming: " + e.message); }
+  } else {
+    chunkFlush(true);
+  }
+  const duration = live.received / SR;
+  const segments = WS.wordsToSegments(live.words).concat(live.orphans).sort((a, b) => a.start - b.start);
+  post("result", {
+    result: {
+      text: live.committed, language: live.language || "?", duration, segments, words: live.words,
+      elapsedMs: Math.round(performance.now() - live.t0), decodeTps: null, live: true,
+    },
+  });
+  liveFree();
+}
+
 self.onmessage = async (e) => {
   const { type } = e.data;
   try {
     if (type === "init") await init();
     else if (type === "transcribe") transcribe(e.data);
+    else if (type === "live_start") liveStart(e.data);
+    else if (type === "live_chunk") liveChunk(e.data);
+    else if (type === "live_stop") liveStop();
   } catch (err) {
     post("error", { msg: String(err && err.message || err) });
   }

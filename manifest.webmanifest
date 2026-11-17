@@ -1,0 +1,27 @@
+{
+  "name": "Whistle — Trascrizioni",
+  "short_name": "Whistle",
+  "description": "Trascrizione audio sul telefono con Whistle, anche offline.",
+  "lang": "it",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f7f5",
+  "theme_color": "#0f766e",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ],
+  "share_target": {
+    "action": "./share-target",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "files": [
+        { "name": "audio", "accept": ["audio/*", "video/*", ".opus", ".ogg", ".m4a", ".aac", ".amr", ".mp3", ".wav"] }
+      ]
+    }
+  }
+}

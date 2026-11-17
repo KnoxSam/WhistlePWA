@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Whistle — Trascrizioni</title>
+<meta name="theme-color" content="#0f766e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Whistle">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<style>
+  :root {
+    --bg: #f6f7f5; --card: #ffffff; --ink: #18211f; --muted: #66716e; --line: #e2e6e3;
+    --accent: #0f766e; --accent-ink: #ffffff; --accent-soft: #e3f2ef; --danger: #c2410c;
+    --radius: 16px; --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1413; --card: #182120; --ink: #e8eeec; --muted: #94a3a0; --line: #26312f;
+            --accent: #2dd4bf; --accent-ink: #062b27; --accent-soft: #123532; --danger: #fb923c; }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 680px; margin: 0 auto;
+    padding: calc(env(safe-area-inset-top) + 16px) 16px calc(env(safe-area-inset-bottom) + 32px); }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+  h1 small { display: block; font-size: 13px; font-weight: 500; color: var(--muted); letter-spacing: 0; }
+  .pill { font-size: 12.5px; padding: 6px 10px; border-radius: 999px; background: var(--card);
+    border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .pill.ok { color: var(--accent); border-color: var(--accent); }
+  .pill.err { color: var(--danger); border-color: var(--danger); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 16px; margin-bottom: 14px; }
+  .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  button, .btn { appearance: none; border: 1px solid var(--line); background: var(--card); color: var(--ink);
+    font: inherit; font-weight: 600; border-radius: 12px; padding: 14px 12px; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 52px; }
+  button.primary, .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button.rec { background: var(--danger); border-color: var(--danger); color: #fff; }
+  button:disabled, .btn.disabled { opacity: .45; pointer-events: none; }
+  .small { min-height: 40px; padding: 8px 12px; font-size: 14px; border-radius: 10px; }
+  .actions .btn { margin: 0; font-size: 16px; color: var(--accent-ink); }
+  input[type=file] { display: none; }
+  .drop { margin-top: 10px; font-size: 13px; color: var(--muted); text-align: center; }
+  details > summary { cursor: pointer; font-weight: 600; list-style: none; display: flex;
+    justify-content: space-between; align-items: center; }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::after { content: "▾"; color: var(--muted); }
+  details[open] > summary::after { content: "▴"; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 6px; }
+  select, input[type=text] { width: 100%; font: inherit; color: var(--ink); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 10px; padding: 11px 12px; }
+  .hint { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+  .bar { height: 8px; background: var(--accent-soft); border-radius: 99px; overflow: hidden; margin: 10px 0 6px; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .25s; }
+  .status { font-size: 14px; color: var(--muted); min-height: 20px; }
+  .file { font-weight: 600; overflow-wrap: anywhere; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+  .tabs button { min-height: 36px; padding: 6px 12px; font-size: 14px; }
+  .tabs button[aria-selected=true] { background: var(--accent-soft); border-color: var(--accent); color: var(--ink); }
+  #text { white-space: pre-wrap; font-family: inherit; font-size: 16px; line-height: 1.6; max-height: 50vh; overflow: auto; margin: 0; }
+  #segs { max-height: 50vh; overflow: auto; font-size: 15px; }
+  #segs div { display: grid; grid-template-columns: 64px 1fr; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+  #segs span { font-family: var(--mono); font-size: 12.5px; color: var(--muted); padding-top: 2px; }
+  .meta { font-size: 13px; color: var(--muted); margin: 8px 0 12px; }
+  .exports { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 8px; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+  #log { font: 12px/1.5 var(--mono); color: var(--muted); white-space: pre-wrap; max-height: 220px; overflow: auto; margin: 10px 0 0; }
+  .hidden { display: none !important; }
+  .timer { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Whistle<small>Trascrizioni sul telefono</small></h1>
+    <span id="pill" class="pill">Avvio…</span>
+  </header>
+
+  <section class="card">
+    <div class="actions">
+      <label class="btn primary" id="pickBtn" for="file">📂 Scegli audio</label>
+      <button id="recBtn" type="button">🎙️ Registra</button>
+    </div>
+    <input id="file" type="file" accept="audio/*,video/*,.opus,.ogg,.m4a,.aac,.amr,.wav,.mp3,.mp4,.webm">
+    <div class="drop">Funziona offline: l'audio non lascia il telefono.</div>
+  </section>
+
+  <section class="card">
+    <details id="opts">
+      <summary>Opzioni</summary>
+      <label for="lang">Lingua</label>
+      <select id="lang">
+        <option value="">Rilevamento automatico</option>
+        <option value="it">Italiano</option>
+        <option value="en">English</option>
+        <option value="de">Deutsch</option>
+        <option value="fr">Français</option>
+        <option value="es">Español</option>
+        <option value="nl">Nederlands</option>
+        <option value="pl">Polski</option>
+      </select>
+      <label for="kw">Parole chiave (separate da virgola)</label>
+      <input id="kw" type="text" placeholder="es. Sam, Qwen, llama.cpp" autocomplete="off">
+      <div class="hint">Nomi propri e termini tecnici che il modello deve riconoscere meglio.</div>
+    </details>
+  </section>
+
+  <section class="card hidden" id="work">
+    <div class="file" id="fname"></div>
+    <div class="bar"><div id="barFill"></div></div>
+    <div class="status" id="status"></div>
+  </section>
+
+  <section class="card hidden" id="resultCard">
+    <div class="tabs" role="tablist">
+      <button class="small" role="tab" aria-selected="true" data-tab="text">Testo</button>
+      <button class="small" role="tab" aria-selected="false" data-tab="segs">Con tempi</button>
+    </div>
+    <div class="meta" id="meta"></div>
+    <pre id="text"></pre>
+    <div id="segs" class="hidden"></div>
+    <div class="row2">
+      <button class="small" id="copyBtn" type="button">Copia testo</button>
+      <button class="small" id="shareBtn" type="button">Condividi</button>
+    </div>
+    <div class="exports">
+      <button class="small" data-fmt="txt" type="button">TXT</button>
+      <button class="small" data-fmt="srt" type="button">SRT</button>
+      <button class="small" data-fmt="vtt" type="button">VTT</button>
+      <button class="small" data-fmt="json" type="button">JSON</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <details>
+      <summary>Diagnostica</summary>
+      <pre id="log"></pre>
+    </details>
+  </section>
+</main>
+<script src="segments.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
